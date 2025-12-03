@@ -1,21 +1,65 @@
 #include <ESP8266WiFi.h>
-#include "config.h" //file that stores wifi credentials
-//THIS IS THE LATEST SERVER AS OF 2/12/2025
-//DOUBLE CHECK PUMP INPUT 
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+#include "config.h" // WiFi + MQTT credentials + pump pin + topic
 
-// GPIO pins
-const int pumpPin = 4;   // Pump
+// MQTT client
+WiFiClientSecure espClient;     // Secure client for HiveMQ TLS
+PubSubClient client(espClient);
 
+// -------- Pump pin --------
+const int pumpPin = PUMP_PIN;
 
-WiFiServer server(80);
+// -------- Callback function --------
+void callback(char* topic, byte* payload, unsigned int length) {
+  String message;
+  for (unsigned int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  Serial.print("Message received on topic ");
+  Serial.print(topic);
+  Serial.print(": ");
+  Serial.println(message);
+
+  if (String(topic) == MQTT_TOPIC_PUMP) {
+    if (message == "ON") {
+      // Turn pump on
+      digitalWrite(pumpPin, HIGH);
+      Serial.println("Pump ON");
+      delay(2000);               // Pump runs for 2 seconds
+      digitalWrite(pumpPin, LOW);
+      Serial.println("Pump OFF");
+
+      // Publish status
+      client.publish(MQTT_TOPIC_PUMP, "DONE");
+    }
+  }
+}
+
+// -------- Connect / reconnect to MQTT --------
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Connecting to MQTT...");
+    if (client.connect("ESP8266Pump", MQTT_USERNAME, MQTT_PASSWORD)) {
+      Serial.println("connected!");
+      client.subscribe(MQTT_TOPIC_PUMP);
+      Serial.print("Subscribed to: ");
+      Serial.println(MQTT_TOPIC_PUMP);
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" retry in 5 seconds");
+      delay(5000);
+    }
+  }
+}
 
 void setup() {
   Serial.begin(115200);
   pinMode(pumpPin, OUTPUT);
-  pinMode(ledPin, OUTPUT);
   digitalWrite(pumpPin, LOW);
-  digitalWrite(ledPin, LOW);
 
+  // ---- WiFi ----
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {
@@ -23,30 +67,16 @@ void setup() {
     Serial.print(".");
   }
   Serial.println("\nWiFi connected. IP: " + WiFi.localIP().toString());
-  server.begin();
+
+  // ---- MQTT ----
+  espClient.setInsecure(); // skip TLS certificate verification
+  client.setServer(MQTT_HOST, MQTT_PORT);
+  client.setCallback(callback);
 }
 
 void loop() {
-  WiFiClient client = server.available();
-  if (client) {
-    String request = client.readStringUntil('\r'); // read HTTP request line
-    client.flush();
-
-    // If pump request received, turn it on, wait 2 seconds, then turn it off
-    if (request.indexOf("/pump/on") != -1) {
-      digitalWrite(pumpPin, HIGH);
-      delay(2000);               // Pump runs for 2 seconds
-      digitalWrite(pumpPin, LOW);
-    
-    }
-
-    // Respond with pump status (0 = off, 1 = just ran)
-    client.println("HTTP/1.1 200 OK");
-    client.println("Content-Type: application/json");
-    client.println("Connection: close");
-    client.println();
-    client.println("{\"pump\":1}");
-    delay(10);
-    client.stop();
+  if (!client.connected()) {
+    reconnect();
   }
+  client.loop();  // handle incoming messages
 }
