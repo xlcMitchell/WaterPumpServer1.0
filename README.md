@@ -29,3 +29,5 @@ A small IoT project to control a water pump via Wi-Fi using an ESP8266. The pump
 - Clicking the image opens the hosted demo video 
 
 [![PCB 3D View](demo1.png)]
+
+![Schematic View](demo2.png)
