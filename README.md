@@ -12,7 +12,7 @@ A small IoT project to control a water pump via Wi-Fi using an ESP8266. The pump
 1. Copy `config.example.h` to `config.h` and fill in your Wi-Fi credentials.
 2. Open the sketch in Arduino IDE.
 3. Upload it to an ESP8266 board.
-4. Send an HTTP GET request to `/pump/on` to trigger the pump.
+4. Send MQTT message  plant/pump/on  to trigger the pump.
 
 ## Testing
 | Test Case | Expected Result | Actual Result | Pass/Fail |
@@ -28,6 +28,6 @@ A small IoT project to control a water pump via Wi-Fi using an ESP8266. The pump
 - `demo.png` is a screenshot of the pump or app in action.
 - Clicking the image opens the hosted demo video 
 
-[![PCB 3D View](demo1.png)]
+![PCB 3D View](demo1.png)
 
 ![Schematic View](demo2.png)
