@@ -8,7 +8,7 @@ WiFiClientSecure espClient;     // Secure client for HiveMQ TLS
 PubSubClient client(espClient);
 
 // -------- Pump pin --------
-const int pumpPin = PUMP_PIN;
+const int pumpPin = 4;
 
 // -------- Callback function --------
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -22,7 +22,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
   Serial.println(message);
 
   if (String(topic) == MQTT_TOPIC_PUMP) {
-    if (message == "ON") {
+    if (message == "on") {
       // Turn pump on
       digitalWrite(pumpPin, HIGH);
       Serial.println("Pump ON");
