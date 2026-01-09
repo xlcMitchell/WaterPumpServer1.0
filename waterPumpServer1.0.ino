@@ -1,50 +1,112 @@
 #include <ESP8266WiFi.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
-#include "config.h" // WiFi + MQTT credentials + pump pin + topic
+#include "config.h" // WiFi + MQTT credentials + topics
 
-// MQTT client
-WiFiClientSecure espClient;     // Secure client for HiveMQ TLS
+// MQTT client (TLS)
+WiFiClientSecure espClient;
 PubSubClient client(espClient);
 
 // -------- Pump pin --------
-const int pumpPin = 4;
+const int pumpPin = 4;  // GPIO4 = D2 on many boards (change if needed)
 
-// -------- Callback function --------
+// Relay logic: set true if your relay turns ON when GPIO is LOW (common)
+const bool RELAY_ACTIVE_LOW = false;
+
+// Pump timing (ms)
+const unsigned long PUMP_MS = 2000;
+
+// State
+bool pumpRunning = false;
+unsigned long pumpStartMs = 0;
+
+// ---------- Helpers ----------
+void setPump(bool on) {
+  if (RELAY_ACTIVE_LOW) {
+    digitalWrite(pumpPin, on ? LOW : HIGH);
+  } else {
+    digitalWrite(pumpPin, on ? HIGH : LOW);
+  }
+}
+
+void publishStatus(const char* msg) {
+  client.publish(TOPIC_STATUS, msg, true); // retained
+  Serial.print("STATUS -> ");
+  Serial.println(msg);
+}
+
+void publishOnline(const char* msg) {
+  client.publish(TOPIC_ONLINE, msg, true); // retained
+  Serial.print("ONLINE -> ");
+  Serial.println(msg);
+}
+
+// ---------- MQTT callback ----------
 void callback(char* topic, byte* payload, unsigned int length) {
   String message;
   for (unsigned int i = 0; i < length; i++) {
     message += (char)payload[i];
   }
-  Serial.print("Message received on topic ");
+  message.trim();
+  message.toLowerCase();
+
+  Serial.print("Message received [");
   Serial.print(topic);
-  Serial.print(": ");
+  Serial.print("]: ");
   Serial.println(message);
 
+  // Command topic
   if (String(topic) == MQTT_TOPIC_PUMP) {
     if (message == "on") {
-      // Turn pump on
-      digitalWrite(pumpPin, HIGH);
-      Serial.println("Pump ON");
-      delay(2000);               // Pump runs for 2 seconds
-      digitalWrite(pumpPin, LOW);
-      Serial.println("Pump OFF");
-
-      // Publish status
-      client.publish(MQTT_TOPIC_PUMP, "DONE");
+      if (!pumpRunning) {
+        pumpRunning = true;
+        pumpStartMs = millis();
+        setPump(true);
+        publishStatus("RUNNING");
+        Serial.println("Pump ON");
+      } else {
+        // Already running; optional: publish again
+        publishStatus("RUNNING");
+      }
+    }
+    else if (message == "off") {
+      // Optional manual off command support
+      pumpRunning = false;
+      setPump(false);
+      publishStatus("IDLE");
+      Serial.println("Pump OFF (manual)");
     }
   }
 }
 
-// -------- Connect / reconnect to MQTT --------
+// ---------- Connect / reconnect to MQTT ----------
 void reconnect() {
   while (!client.connected()) {
-    Serial.print("Connecting to MQTT...");
-    if (client.connect("ESP8266Pump", MQTT_USERNAME, MQTT_PASSWORD)) {
+    Serial.print("Connecting to MQTT... ");
+
+    // Unique client ID so HiveMQ doesn't kick you off for duplicate IDs
+    String clientId = "ESP8266-" + String(ESP.getChipId()) + "-" + String(millis());
+
+    // Last Will: if device disconnects unexpectedly, broker publishes OFFLINE (retained)
+    bool ok = client.connect(
+      clientId.c_str(),
+      MQTT_USERNAME,
+      MQTT_PASSWORD,
+      TOPIC_ONLINE, // will topic
+      1,            // QoS
+      true,         // retained
+      "OFFLINE"     // will payload
+    );
+
+    if (ok) {
       Serial.println("connected!");
-      client.subscribe(MQTT_TOPIC_PUMP);
+
+      client.subscribe(MQTT_TOPIC_PUMP, 1);
       Serial.print("Subscribed to: ");
       Serial.println(MQTT_TOPIC_PUMP);
+
+      publishOnline("ONLINE");
+      publishStatus("IDLE");
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
@@ -56,27 +118,45 @@ void reconnect() {
 
 void setup() {
   Serial.begin(115200);
+  delay(50);
+
   pinMode(pumpPin, OUTPUT);
-  digitalWrite(pumpPin, LOW);
+  setPump(false);
 
   // ---- WiFi ----
+  WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
   Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nWiFi connected. IP: " + WiFi.localIP().toString());
+  Serial.println();
+  Serial.print("WiFi connected. IP: ");
+  Serial.println(WiFi.localIP());
 
   // ---- MQTT ----
-  espClient.setInsecure(); // skip TLS certificate verification
+  espClient.setInsecure(); // skip TLS cert verification (OK for dev/testing)
   client.setServer(MQTT_HOST, MQTT_PORT);
   client.setCallback(callback);
+
+  // Optional but helpful
+  client.setKeepAlive(30);
+  client.setSocketTimeout(10);
 }
 
 void loop() {
   if (!client.connected()) {
     reconnect();
   }
-  client.loop();  // handle incoming messages
+  client.loop();
+
+  // Non-blocking pump timer
+  if (pumpRunning && (millis() - pumpStartMs >= PUMP_MS)) {
+    pumpRunning = false;
+    setPump(false);
+    publishStatus("DONE");
+    Serial.println("Pump OFF (timer done)");
+  }
 }
