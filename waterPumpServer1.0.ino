@@ -7,19 +7,22 @@
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
 
-// -------- Pump pin --------
+// -------- Pump pin and moisture sensor --------
 const int pumpPin = 4;  // GPIO4 = D2 on many boards (change if needed)
-
+const int sensorPin = A0;
 // Relay logic: set true if your relay turns ON when GPIO is LOW (common)
 const bool RELAY_ACTIVE_LOW = false;
 
 // Pump timing (ms)
 const unsigned long PUMP_MS = 2000;
 
+//moisture reading timing
+const unsigned long READING_DURATION = 360000;
+
 // State
 bool pumpRunning = false;
 unsigned long pumpStartMs = 0;
-
+unsigned long lastMoistureReading = 0; //update after new reading
 // ---------- Helpers ----------
 void setPump(bool on) {
   if (RELAY_ACTIVE_LOW) {
@@ -33,6 +36,12 @@ void publishStatus(const char* msg) {
   client.publish(TOPIC_STATUS, msg, true); // retained
   Serial.print("STATUS -> ");
   Serial.println(msg);
+}
+
+void publishMoisture(const char* moisture){
+  client.publish(TOPIC_MOISTURE, moisture, true); 
+  Serial.print("MOISTURE = ");
+  Serial.println(moisture);
 }
 
 void publishOnline(const char* msg) {
@@ -158,5 +167,22 @@ void loop() {
     setPump(false);
     publishStatus("DONE");
     Serial.println("Pump OFF (timer done)");
+    delay(2000);
+    publishStatus("IDLE");
+  }
+  delay(10000);
+  Serial.println(analogRead(sensorPin));
+
+  if(millis() - lastMoistureReading >= READING_DURATION){
+    int raw = analogRead(sensorPin);
+    int mappedVal = map(raw,1023,298,0,100); //1023 = dry (will convert to 0%) 298 = just watered (100%) moisture lvl
+    int constrainVal = constrain(mappedVal,0,100); //makes sure value is within correct range..
+
+    //better way to create the string for memory on the esp8266
+    char payload[8];
+    itoa(constrainVal, payload, 10);
+    publishMoisture(payload);
+    lastMoistureReading = millis();
+
   }
 }
