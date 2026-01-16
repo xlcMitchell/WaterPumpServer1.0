@@ -21,6 +21,8 @@ const unsigned long READING_DURATION = 360000;
 
 // State
 bool pumpRunning = false;
+bool pendingIdle = false;
+unsigned long doneMillisecs = 0;
 unsigned long pumpStartMs = 0;
 unsigned long lastMoistureReading = 0; //update after new reading
 // ---------- Helpers ----------
@@ -156,6 +158,23 @@ void setup() {
 }
 
 void loop() {
+
+  //----WIFI RECONNECT LOGIC START----
+  if(Wifi.status() != WL_CONNECTED){
+    Serial.println("WIFI Lost, reconnecting...");
+    Wifi.disconnect();
+    Wifi.begin(WIFI_SSID,WIFI_PASSWORD);
+    unsigned long start = millis();
+    while(Wifi.status() != WL_CONNECTED && start < 10000){
+      delay(200);
+      Serial.print(".");
+    }
+    Serial.println("");
+    return; //makes sure wifi reconnects before proceeding
+  }
+  //---WIFI RECONNECT LOGIC END---
+  
+  //Reconnect to mqtt broker if disconnected
   if (!client.connected()) {
     reconnect();
   }
@@ -167,11 +186,17 @@ void loop() {
     setPump(false);
     publishStatus("DONE");
     Serial.println("Pump OFF (timer done)");
-    delay(2000);
-    publishStatus("IDLE");
+    pendingIdle = true;
+    doneMillisecs = millis();
   }
-  delay(10000);
-  Serial.println(analogRead(sensorPin));
+
+  //Non-blocking setting idle 
+  if(pendingIdle && doneMillisecs >= 2000){
+    publishStatus("IDLE");
+    pendingIdle = false;
+
+  }
+  
 
   if(millis() - lastMoistureReading >= READING_DURATION){
     int raw = analogRead(sensorPin);
