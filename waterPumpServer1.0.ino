@@ -291,7 +291,7 @@ void loop() {
     WiFi.disconnect();
     WiFi.begin(WIFI_SSID,WIFI_PASSWORD);
     unsigned long start = millis();
-    while(WiFi.status() != WL_CONNECTED && start < 10000){
+    while(WiFi.status() != WL_CONNECTED && (millis() - start < 10000)){
       delay(200);
       Serial.print(".");
     }
@@ -326,7 +326,9 @@ void loop() {
 
   if(millis() - lastMoistureReading >= READING_DURATION){
     int raw = analogRead(sensorPin);
-    int mappedVal = map(raw,1023,298,0,100); //1023 = dry (will convert to 0%) 298 = just watered (100%) moisture lvl
+    Serial.print("raw value= ");
+    Serial.println(raw);
+    int mappedVal = map(raw,1023,628,0,100); //1023 = dry (will convert to 0%) 298 = just watered (100%) moisture lvl
     int constrainVal = constrain(mappedVal,0,100); //makes sure value is within correct range..
 
     //better way to create the string for memory on the esp8266
