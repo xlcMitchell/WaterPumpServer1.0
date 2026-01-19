@@ -160,12 +160,12 @@ void setup() {
 void loop() {
 
   //----WIFI RECONNECT LOGIC START----
-  if(Wifi.status() != WL_CONNECTED){
+  if(WiFi.status() != WL_CONNECTED){
     Serial.println("WIFI Lost, reconnecting...");
-    Wifi.disconnect();
-    Wifi.begin(WIFI_SSID,WIFI_PASSWORD);
+    WiFi.disconnect();
+    WiFi.begin(WIFI_SSID,WIFI_PASSWORD);
     unsigned long start = millis();
-    while(Wifi.status() != WL_CONNECTED && start < 10000){
+    while(WiFi.status() != WL_CONNECTED && start < 10000){
       delay(200);
       Serial.print(".");
     }
@@ -173,7 +173,7 @@ void loop() {
     return; //makes sure wifi reconnects before proceeding
   }
   //---WIFI RECONNECT LOGIC END---
-  
+
   //Reconnect to mqtt broker if disconnected
   if (!client.connected()) {
     reconnect();
