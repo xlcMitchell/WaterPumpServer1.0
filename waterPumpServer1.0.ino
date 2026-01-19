@@ -27,6 +27,25 @@ bool pendingIdle = false;
 unsigned long doneMillisecs = 0;
 unsigned long pumpStartMs = 0;
 unsigned long lastMoistureReading = 0; //update after new reading
+
+// ---------- Auto-watering config ----------
+struct AutoConfig {
+  bool enabled     = false;
+  int  threshold   = 35;     // water if moisture < threshold
+  int  durationMs  = 2000;   // pump run ms (you can override PUMP_MS with this)
+  int  cooldownMin = 1440;   // 24h fixed
+  int  hyst        = 10;     // latch resets when moisture >= threshold + hyst
+  int  maxPerDay   = 3;      // optional (0 = unlimited)
+};
+
+AutoConfig cfg;
+
+// ---------- Auto-watering state ----------
+bool lowLatched = false;                 // stops re-trigger while still "low"
+unsigned long lastWateredMs = 0;         // millis timestamp (note: resets on reboot)
+int watersToday = 0;                     // optional
+unsigned long dayWindowStartMs = 0;      // optional day counter start
+
 // ---------- Helpers ----------
 void setPump(bool on) {
   if (RELAY_ACTIVE_LOW) {
@@ -54,23 +73,126 @@ void publishOnline(const char* msg) {
   Serial.println(msg);
 }
 
+void applyAutoConfig(const String& payload) {
+  int start = 0;
+
+  while (start < (int)payload.length()) {
+    int end = payload.indexOf(';', start);
+    if (end == -1) end = payload.length();
+
+    String pair = payload.substring(start, end);
+    int eq = pair.indexOf('=');
+
+    if (eq > 0) {
+      String key = pair.substring(0, eq);
+      String val = pair.substring(eq + 1);
+      key.trim(); val.trim();
+
+      if (key == "enabled")        cfg.enabled = (val.toInt() == 1);
+      else if (key == "threshold")   cfg.threshold = constrain(val.toInt(), 0, 100);
+      else if (key == "durationMs")  cfg.durationMs = constrain(val.toInt(), 500, 30000);
+      else if (key == "cooldownMin") cfg.cooldownMin = constrain(val.toInt(), 1, 7 * 24 * 60);
+      else if (key == "hyst")        cfg.hyst = constrain(val.toInt(), 0, 50);
+      else if (key == "maxPerDay")   cfg.maxPerDay = constrain(val.toInt(), 0, 20);
+    }
+
+    start = end + 1;
+  }
+
+  Serial.printf("AUTO CFG -> en=%d thr=%d dur=%d cdMin=%d hyst=%d max=%d\n",
+                cfg.enabled, cfg.threshold, cfg.durationMs, cfg.cooldownMin, cfg.hyst, cfg.maxPerDay);
+
+
+}
+
+void startPumpAuto() {
+  if (pumpRunning) return;
+
+  pumpRunning = true;
+  pumpStartMs = millis();
+  setPump(true);
+  publishStatus("RUNNING");
+  Serial.println("Pump ON (auto)");
+
+  // record watering time for cooldown
+  lastWateredMs = millis();
+
+  // optional daily limit window
+  if (dayWindowStartMs == 0 || (millis() - dayWindowStartMs) > 24UL * 60UL * 60UL * 1000UL) {
+    dayWindowStartMs = millis();
+    watersToday = 0;
+  }
+  watersToday++;
+
+  // latch immediately so it won't spam if moisture stays low
+  lowLatched = true;
+
+  // optional: publish last watered (retained)
+  String lw = String(lastWateredMs);
+}
+
+void maybeAutoWater(int moisturePct) {
+  if (!cfg.enabled) return;
+  if (pumpRunning) return;
+
+  // Reset latch once moisture recovers above threshold + hyst
+  if (moisturePct >= (cfg.threshold + cfg.hyst)) {
+    lowLatched = false;
+    return;
+  }
+
+  // Only trigger if below threshold
+  if (moisturePct >= cfg.threshold) return;
+
+  // Don’t re-trigger while still low
+  if (lowLatched) return;
+
+  // Cooldown
+  unsigned long cooldownMs = (unsigned long)cfg.cooldownMin * 60UL * 1000UL;
+  if (lastWateredMs != 0 && (millis() - lastWateredMs) < cooldownMs) return;
+
+  // Max per day (optional)
+  if (cfg.maxPerDay > 0) {
+    if (dayWindowStartMs == 0 || (millis() - dayWindowStartMs) > 24UL * 60UL * 60UL * 1000UL) {
+      dayWindowStartMs = millis();
+      watersToday = 0;
+    }
+    if (watersToday >= cfg.maxPerDay) return;
+  }
+
+  // All good -> water
+  startPumpAuto();
+}
+
+
 // ---------- MQTT callback ----------
 void callback(char* topic, byte* payload, unsigned int length) {
   String message;
+  message.reserve(length + 1);
   for (unsigned int i = 0; i < length; i++) {
     message += (char)payload[i];
   }
   message.trim();
-  message.toLowerCase();
 
   Serial.print("Message received [");
   Serial.print(topic);
   Serial.print("]: ");
   Serial.println(message);
 
-  // Command topic
-  if (String(topic) == MQTT_TOPIC_PUMP) {
-    if (message == "on") {
+  String t = String(topic);
+
+  // ---- Auto config topic ----
+  if (t == TOPIC_AUTO_CONFIG) {
+    applyAutoConfig(message);
+    return;
+  }
+
+  // ---- Manual pump command topic ----
+  if (t == MQTT_TOPIC_PUMP) {
+    String cmd = message;
+    cmd.toLowerCase();
+
+    if (cmd == "on") {
       if (!pumpRunning) {
         pumpRunning = true;
         pumpStartMs = millis();
@@ -78,12 +200,9 @@ void callback(char* topic, byte* payload, unsigned int length) {
         publishStatus("RUNNING");
         Serial.println("Pump ON");
       } else {
-        // Already running; optional: publish again
         publishStatus("RUNNING");
       }
-    }
-    else if (message == "off") {
-      // Optional manual off command support
+    } else if (cmd == "off") {
       pumpRunning = false;
       setPump(false);
       publishStatus("IDLE");
@@ -91,6 +210,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
     }
   }
 }
+//----MQTT callback End-----
 
 // ---------- Connect / reconnect to MQTT ----------
 void reconnect() {
@@ -117,6 +237,10 @@ void reconnect() {
       client.subscribe(MQTT_TOPIC_PUMP, 1);
       Serial.print("Subscribed to: ");
       Serial.println(MQTT_TOPIC_PUMP);
+
+      client.subscribe(TOPIC_AUTO_CONFIG, 1);
+      Serial.print("Subscribed to: ");
+      Serial.println(TOPIC_AUTO_CONFIG);
 
       publishOnline("ONLINE");
       publishStatus("IDLE");
@@ -193,7 +317,7 @@ void loop() {
   }
 
   //Non-blocking setting idle 
-  if(pendingIdle && doneMillisecs >= 2000){
+  if(pendingIdle && (millis() - doneMillisecs >= 2000)){
     publishStatus("IDLE");
     pendingIdle = false;
 
@@ -209,6 +333,7 @@ void loop() {
     char payload[8];
     itoa(constrainVal, payload, 10);
     publishMoisture(payload);
+    maybeAutoWater(constrainVal);
     lastMoistureReading = millis();
 
   }
