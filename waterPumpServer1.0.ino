@@ -3,6 +3,8 @@
 #include <PubSubClient.h>
 #include "config.h" // WiFi + MQTT credentials + topics
 
+//auto watering branch testing
+
 // MQTT client (TLS)
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
